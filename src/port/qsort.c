@@ -44,6 +44,8 @@
  * SUCH DAMAGE.
  */
 
+
+#include <math.h>
 #include "c.h"
 
 
@@ -109,47 +111,95 @@ med3(char *a, char *b, char *c, int (*cmp) (const void *, const void *))
 		: (cmp(b, c) > 0 ? b : (cmp(a, c) < 0 ? a : c));
 }
 
-void
-pg_qsort(void *a, size_t n, size_t es, int (*cmp) (const void *, const void *))
+/* heap sort: based on wikipedia */
+
+static inline void
+heap_shift_down(void *a, const size_t start, const size_t end,
+	int swaptype, const size_t es, int(*cmp) (const void *, const void *)) {
+	size_t root = start;
+
+	while ((root << 1) + 1 <= end) {
+		size_t child = (root << 1) + 1;
+
+		if ((child < end) && cmp((char*)a + child * es, (char*)a + (child + 1)*es) < 0) {
+			child++;
+		}
+
+		if (cmp((char*)a + root * es, (char*)a + child * es) < 0) {
+			swap((char*)a + root * es, (char*)a + child * es);
+			root = child;
+		}
+		else {
+			return;
+		}
+	}
+}
+
+static inline void
+heap_sort(void *a, const size_t size, int swaptype, const size_t es, int(*cmp) (const void *, const void *)) {
+
+	size_t start, end;
+	/* don't bother sorting an array of size <= 1 */
+	if (size <= 1) {
+		return;
+	}
+
+	end = size - 1;
+
+	/* heapify */
+	start = (end - 1) >> 1;
+	while (1) {
+		heap_shift_down(a, start, end, swaptype, es, cmp);
+
+		if (start == 0) {
+			break;
+		}
+
+		start--;
+	}
+
+	while (end > 0) {
+		swap((char*)a + end * es, (char*)a);
+		heap_shift_down(a, 0, end - 1, swaptype, es, cmp);
+		end--;
+	}
+}
+
+static void
+pg_qsort_recursive(void *a, size_t n, size_t depth, int swaptype, size_t es, int(*cmp) (const void *, const void *))
 {
 	char	   *pa,
-			   *pb,
-			   *pc,
-			   *pd,
-			   *pl,
-			   *pm,
-			   *pn;
+		*pb,
+		*pc,
+		*pd,
+		*pl,
+		*pm,
+		*pn;
 	size_t		d1,
-				d2;
-	int			r,
-				swaptype,
-				presorted;
+		d2;
+	int			r;
 
-loop:SWAPINIT(a, es);
+loop:
 	if (n < 7)
 	{
-		for (pm = (char *) a + es; pm < (char *) a + n * es; pm += es)
-			for (pl = pm; pl > (char *) a && cmp(pl - es, pl) > 0;
-				 pl -= es)
+		for (pm = (char *)a + es; pm < (char *)a + n * es; pm += es)
+			for (pl = pm; pl >(char *) a && cmp(pl - es, pl) > 0;
+				pl -= es)
 				swap(pl, pl - es);
 		return;
 	}
-	presorted = 1;
-	for (pm = (char *) a + es; pm < (char *) a + n * es; pm += es)
-	{
-		if (cmp(pm - es, pm) > 0)
-		{
-			presorted = 0;
-			break;
-		}
-	}
-	if (presorted)
+
+	/* convert to heap sort if exceed depth limit */
+	if (!depth) {
+		heap_sort(a, n, swaptype, es, cmp);
 		return;
-	pm = (char *) a + (n / 2) * es;
+	}
+
+	pm = (char *)a + (n / 2) * es;
 	if (n > 7)
 	{
-		pl = (char *) a;
-		pn = (char *) a + (n - 1) * es;
+		pl = (char *)a;
+		pn = (char *)a + (n - 1) * es;
 		if (n > 40)
 		{
 			size_t		d = (n / 8) * es;
@@ -161,8 +211,8 @@ loop:SWAPINIT(a, es);
 		pm = med3(pl, pm, pn, cmp);
 	}
 	swap(a, pm);
-	pa = pb = (char *) a + es;
-	pc = pd = (char *) a + (n - 1) * es;
+	pa = pb = (char *)a + es;
+	pc = pd = (char *)a + (n - 1) * es;
 	for (;;)
 	{
 		while (pb <= pc && (r = cmp(pb, a)) <= 0)
@@ -189,8 +239,8 @@ loop:SWAPINIT(a, es);
 		pb += es;
 		pc -= es;
 	}
-	pn = (char *) a + n * es;
-	d1 = Min(pa - (char *) a, pb - pa);
+	pn = (char *)a + n * es;
+	d1 = Min(pa - (char *)a, pb - pa);
 	vecswap(a, pb - d1, d1);
 	d1 = Min(pd - pc, pn - pd - es);
 	vecswap(pb, pn - d1, d1);
@@ -200,13 +250,14 @@ loop:SWAPINIT(a, es);
 	{
 		/* Recurse on left partition, then iterate on right partition */
 		if (d1 > es)
-			pg_qsort(a, d1 / es, es, cmp);
+			pg_qsort_recursive(a, d1 / es, depth - 1, swaptype, es, cmp);
 		if (d2 > es)
 		{
 			/* Iterate rather than recurse to save stack space */
-			/* pg_qsort(pn - d2, d2 / es, es, cmp); */
+			/* pg_qsort_recursive(pn - d2, d2 / es, depth - 1, es, cmp); */
 			a = pn - d2;
 			n = d2 / es;
+			depth--;
 			goto loop;
 		}
 	}
@@ -214,16 +265,36 @@ loop:SWAPINIT(a, es);
 	{
 		/* Recurse on right partition, then iterate on left partition */
 		if (d2 > es)
-			pg_qsort(pn - d2, d2 / es, es, cmp);
+			pg_qsort_recursive(pn - d2, d2 / es, depth - 1, swaptype, es, cmp);
 		if (d1 > es)
 		{
 			/* Iterate rather than recurse to save stack space */
-			/* pg_qsort(a, d1 / es, es, cmp); */
+			/* pg_qsort_recursive(a, d1 / es, depth - 1, es, cmp); */
 			n = d1 / es;
+			depth--;
 			goto loop;
 		}
 	}
 }
+
+
+void
+pg_qsort(void *a, const size_t size, const size_t es, int(*cmp) (const void *, const void *)) {
+	int swaptype, presorted = 1;
+	char* pm;
+	for (pm = (char *)a + es; pm < (char *)a + size * es; pm += es)
+	{
+		if (cmp(pm - es, pm) > 0)
+		{
+			presorted = 0;
+			break;
+		}
+	}
+	if (presorted)
+		return;
+	SWAPINIT(a, es);
+	pg_qsort_recursive(a, size, 2 * log(size), swaptype, es, cmp);
+};
 
 /*
  * qsort comparator wrapper for strcmp.

@@ -108,6 +108,8 @@ sub emit_qsort_boilerplate
  * worth the effort", but we have seen crashes in the field due to stack
  * overrun, so that judgment seems wrong.
  */
+ 
+#include <math.h>
 
 static void
 swapfunc(SortTuple *a, SortTuple *b, size_t n)
@@ -145,8 +147,63 @@ med3_$SUFFIX(SortTuple *a, SortTuple *b, SortTuple *c$EXTRAARGS)
 			(cmp_$SUFFIX(a, c$CMPPARAMS) < 0 ? a : c));
 }
 
+/* heap sort: based on wikipedia */
+
+static inline void
+heap_shift_down_$SUFFIX(SortTuple *a, const size_t start, const size_t end$EXTRAARGS) {
+  size_t child, root = start;
+
+  while ((root << 1) + 1 <= end) {
+    CHECK_FOR_INTERRUPTS();
+    
+    child = (root << 1) + 1;
+
+		if ((child < end) && cmp_$SUFFIX(a + child, a + (child + 1)$CMPPARAMS) < 0) {
+			child++;
+		}
+
+		if (cmp_$SUFFIX(a + root, a + child$CMPPARAMS) < 0) {
+			swap(a + root, a + child);
+			root = child;
+		}
+		else {
+			return;
+		}
+	}
+}
+
+static inline void
+heap_sort_$SUFFIX(SortTuple *a, const size_t size$EXTRAARGS) {
+
+	size_t start, end;
+	/* don't bother sorting an array of size <= 1 */
+	if (size <= 1) {
+		return;
+	}
+
+	end = size - 1;
+
+	/* heapify */
+	start = (end - 1) >> 1;
+	while (1) {
+		heap_shift_down_$SUFFIX(a, start, end$EXTRAPARAMS);
+
+		if (start == 0) {
+			break;
+		}
+
+		start--;
+	}
+
+	while (end > 0) {
+		swap(a + end, a);
+		heap_shift_down_$SUFFIX(a, 0, end - 1$EXTRAPARAMS);
+		end--;
+	}
+}
+
 static void
-qsort_$SUFFIX(SortTuple *a, size_t n$EXTRAARGS)
+qsort_recursive_$SUFFIX(SortTuple *a, size_t n, size_t depth$EXTRAARGS)
 {
 	SortTuple  *pa,
 			   *pb,
@@ -157,8 +214,7 @@ qsort_$SUFFIX(SortTuple *a, size_t n$EXTRAARGS)
 			   *pn;
 	size_t		d1,
 				d2;
-	int			r,
-				presorted;
+	int			r;
 
 loop:
 	CHECK_FOR_INTERRUPTS();
@@ -169,18 +225,12 @@ loop:
 				swap(pl, pl - 1);
 		return;
 	}
-	presorted = 1;
-	for (pm = a + 1; pm < a + n; pm++)
-	{
-		CHECK_FOR_INTERRUPTS();
-		if (cmp_$SUFFIX(pm - 1, pm$CMPPARAMS) > 0)
-		{
-			presorted = 0;
-			break;
-		}
+  /* convert to heap sort if exceed depth limit */
+	if (!depth) {
+		heap_sort_$SUFFIX(a, n$EXTRAPARAMS);
+    return;
 	}
-	if (presorted)
-		return;
+
 	pm = a + (n / 2);
 	if (n > 7)
 	{
@@ -238,13 +288,14 @@ loop:
 	{
 		/* Recurse on left partition, then iterate on right partition */
 		if (d1 > 1)
-			qsort_$SUFFIX(a, d1$EXTRAPARAMS);
+			qsort_recursive_$SUFFIX(a, d1, depth - 1$EXTRAPARAMS);
 		if (d2 > 1)
 		{
 			/* Iterate rather than recurse to save stack space */
-			/* qsort_$SUFFIX(pn - d2, d2$EXTRAPARAMS); */
+			/* qsort_recursive_$SUFFIX(pn - d2, d2, depth - 1$EXTRAPARAMS); */
 			a = pn - d2;
 			n = d2;
+      depth--;
 			goto loop;
 		}
 	}
@@ -252,15 +303,36 @@ loop:
 	{
 		/* Recurse on right partition, then iterate on left partition */
 		if (d2 > 1)
-			qsort_$SUFFIX(pn - d2, d2$EXTRAPARAMS);
+			qsort_recursive_$SUFFIX(pn - d2, d2, depth - 1$EXTRAPARAMS);
 		if (d1 > 1)
 		{
 			/* Iterate rather than recurse to save stack space */
-			/* qsort_$SUFFIX(a, d1$EXTRAPARAMS); */
+			/* qsort_recursive_$SUFFIX(a, d1, depth - 1$EXTRAPARAMS); */
 			n = d1;
+      depth--;
 			goto loop;
 		}
 	}
 }
+
+static void
+qsort_$SUFFIX(SortTuple *a, size_t n$EXTRAARGS)
+{
+  int presorted = 1;
+	SortTuple* pm;
+  for (pm = a + 1; pm < a + n; pm++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (cmp_$SUFFIX(pm - 1, pm$CMPPARAMS) > 0)
+		{
+			presorted = 0;
+			break;
+		}
+	}
+	if (presorted)
+		return;
+	qsort_recursive_$SUFFIX(a, n, 2 * log(n)$EXTRAPARAMS);
+}
+
 EOM
 }

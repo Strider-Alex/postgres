@@ -44,6 +44,8 @@
  * SUCH DAMAGE.
  */
 
+
+#include <math.h>
 #include "c.h"
 
 
@@ -102,54 +104,103 @@ swapfunc(char *a, char *b, size_t n, int swaptype)
 #define vecswap(a, b, n) if ((n) > 0) swapfunc(a, b, n, swaptype)
 
 static char *
-med3(char *a, char *b, char *c, qsort_arg_comparator cmp, void *arg)
+med3(char *a, char *b, char *c, qsort_arg_comparator cmp, void* arg)
 {
 	return cmp(a, b, arg) < 0 ?
-		(cmp(b, c, arg) < 0 ? b : (cmp(a, c, arg) < 0 ? c : a))
-		: (cmp(b, c, arg) > 0 ? b : (cmp(a, c, arg) < 0 ? a : c));
+		(cmp(b, c , arg) < 0 ? b : (cmp(a, c, arg) < 0 ? c : a))
+		: (cmp(b, c, arg)  > 0 ? b : (cmp(a, c, arg) < 0 ? a : c));
 }
 
-void
-qsort_arg(void *a, size_t n, size_t es, qsort_arg_comparator cmp, void *arg)
+
+/* heap sort: based on wikipedia */
+
+static inline void
+heap_shift_down(void *a, const size_t start, const size_t end,
+	int swaptype, const size_t es, qsort_arg_comparator cmp, void* arg) {
+	size_t root = start;
+
+	while ((root << 1) + 1 <= end) {
+		size_t child = (root << 1) + 1;
+
+		if ((child < end) && cmp((char*)a + child * es, (char*)a + (child + 1)*es, arg) < 0) {
+			child++;
+		}
+
+		if (cmp((char*)a + root * es, (char*)a + child * es, arg) < 0) {
+			swap((char*)a + root * es, (char*)a + child * es);
+			root = child;
+		}
+		else {
+			return;
+		}
+	}
+}
+
+static inline void
+heap_sort(void *a, const size_t size, int swaptype, const size_t es, qsort_arg_comparator cmp, void* arg) {
+
+	size_t start, end;
+	/* don't bother sorting an array of size <= 1 */
+	if (size <= 1) {
+		return;
+	}
+
+	end = size - 1;
+
+	/* heapify */
+	start = (end - 1) >> 1;
+	while (1) {
+		heap_shift_down(a, start, end, swaptype, es, cmp, arg);
+
+		if (start == 0) {
+			break;
+		}
+
+		start--;
+	}
+
+	while (end > 0) {
+		swap((char*)a + end * es, (char*)a);
+		heap_shift_down(a, 0, end - 1, swaptype, es, cmp, arg);
+		end--;
+	}
+}
+
+static void
+pg_qsort_arg_recursive(void *a, size_t n, size_t depth, int swaptype, size_t es, qsort_arg_comparator cmp, void* arg)
 {
 	char	   *pa,
-			   *pb,
-			   *pc,
-			   *pd,
-			   *pl,
-			   *pm,
-			   *pn;
+		*pb,
+		*pc,
+		*pd,
+		*pl,
+		*pm,
+		*pn;
 	size_t		d1,
-				d2;
-	int			r,
-				swaptype,
-				presorted;
+		d2;
+	int			r;
 
-loop:SWAPINIT(a, es);
+loop:
 	if (n < 7)
 	{
-		for (pm = (char *) a + es; pm < (char *) a + n * es; pm += es)
-			for (pl = pm; pl > (char *) a && cmp(pl - es, pl, arg) > 0;
-				 pl -= es)
+		for (pm = (char *)a + es; pm < (char *)a + n * es; pm += es)
+			for (pl = pm; pl >(char *) a && cmp(pl - es, pl, arg) > 0;
+				pl -= es)
 				swap(pl, pl - es);
 		return;
 	}
-	presorted = 1;
-	for (pm = (char *) a + es; pm < (char *) a + n * es; pm += es)
-	{
-		if (cmp(pm - es, pm, arg) > 0)
-		{
-			presorted = 0;
-			break;
-		}
-	}
-	if (presorted)
+
+	/* convert to heap sort if exceed depth limit */
+	if (!depth) {
+		heap_sort(a, n, swaptype, es, cmp, arg);
 		return;
-	pm = (char *) a + (n / 2) * es;
+	}
+
+	pm = (char *)a + (n / 2) * es;
 	if (n > 7)
 	{
-		pl = (char *) a;
-		pn = (char *) a + (n - 1) * es;
+		pl = (char *)a;
+		pn = (char *)a + (n - 1) * es;
 		if (n > 40)
 		{
 			size_t		d = (n / 8) * es;
@@ -161,8 +212,8 @@ loop:SWAPINIT(a, es);
 		pm = med3(pl, pm, pn, cmp, arg);
 	}
 	swap(a, pm);
-	pa = pb = (char *) a + es;
-	pc = pd = (char *) a + (n - 1) * es;
+	pa = pb = (char *)a + es;
+	pc = pd = (char *)a + (n - 1) * es;
 	for (;;)
 	{
 		while (pb <= pc && (r = cmp(pb, a, arg)) <= 0)
@@ -189,8 +240,8 @@ loop:SWAPINIT(a, es);
 		pb += es;
 		pc -= es;
 	}
-	pn = (char *) a + n * es;
-	d1 = Min(pa - (char *) a, pb - pa);
+	pn = (char *)a + n * es;
+	d1 = Min(pa - (char *)a, pb - pa);
 	vecswap(a, pb - d1, d1);
 	d1 = Min(pd - pc, pn - pd - es);
 	vecswap(pb, pn - d1, d1);
@@ -200,13 +251,14 @@ loop:SWAPINIT(a, es);
 	{
 		/* Recurse on left partition, then iterate on right partition */
 		if (d1 > es)
-			qsort_arg(a, d1 / es, es, cmp, arg);
+			pg_qsort_arg_recursive(a, d1 / es, depth - 1, swaptype, es, cmp, arg);
 		if (d2 > es)
 		{
 			/* Iterate rather than recurse to save stack space */
-			/* qsort_arg(pn - d2, d2 / es, es, cmp, arg); */
+			/* pg_qsort_arg_recursive(pn - d2, d2 / es, depth - 1, es, cmp, arg); */
 			a = pn - d2;
 			n = d2 / es;
+			depth--;
 			goto loop;
 		}
 	}
@@ -214,13 +266,34 @@ loop:SWAPINIT(a, es);
 	{
 		/* Recurse on right partition, then iterate on left partition */
 		if (d2 > es)
-			qsort_arg(pn - d2, d2 / es, es, cmp, arg);
+			pg_qsort_arg_recursive(pn - d2, d2 / es, depth - 1, swaptype, es, cmp, arg);
 		if (d1 > es)
 		{
 			/* Iterate rather than recurse to save stack space */
-			/* qsort_arg(a, d1 / es, es, cmp, arg); */
+			/* pg_qsort_arg_recursive(a, d1 / es, depth - 1, es, cmp, arg); */
 			n = d1 / es;
+			depth--;
 			goto loop;
 		}
 	}
 }
+
+
+void
+qsort_arg(void *a, const size_t size, const size_t es, qsort_arg_comparator cmp, void* arg) {
+	int swaptype, presorted = 1;
+	char* pm;
+	for (pm = (char *)a + es; pm < (char *)a + size * es; pm += es)
+	{
+		if (cmp(pm - es, pm, arg) > 0)
+		{
+			presorted = 0;
+			break;
+		}
+	}
+	if (presorted)
+		return;
+	SWAPINIT(a, es);
+	pg_qsort_arg_recursive(a, size, 2 * log(size), swaptype, es, cmp, arg);
+};
+
